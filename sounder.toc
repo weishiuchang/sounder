@@ -1,0 +1,8 @@
+## Interface: 120007,120005
+## Title: Sounder
+## Notes: Temporarily apply sound settings to hear the fishing bobber
+## Author: Dave Chang
+## Version: 1.0.0
+## SavedVariables: SounderDB
+
+sounder.lua
