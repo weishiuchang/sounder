@@ -1,16 +1,14 @@
 # Sounder
 
-A fishing aid addon for **World of Warcraft**.
+A fishing audio aid addon for **World of Warcraft**.
 
 ## The Problem
 
-Midnight no longer exposes bobber splash events to addons, so fishing helpers that listened for the bobber sound stopped working.
+Midnight no longer exposes bobber splash events to addons, so fishing helpers that listened for the bobber sound stopped working. If your game volume is low, it's easy to miss the splash.
 
-## How Sounder Fixes It
+## How Sounder helps
 
-Sounder watches for your fishing channel cast (spell 131476 by default). The moment the cast begins, it automatically applies your desired fishing sound settings so you can hear the bobber splash. When the cast ends, your original audio settings are automatically restored.
-
-NOTE: This addon will not change the audio while in combat and will automatically restore audio settings when entering into combat while fishing.
+Sounder watches for your fishing channel cast (spell 131476 by default). The moment the cast begins, it automatically applies your desired fishing sound settings so you can hear the bobber splash. When the cast ends, your original audio settings are automatically restored. If you enter combat while in the middle of fishing, Sounder will automatically restore your audio settings to try to save your hearing. If you are in combat when you start fishing, Sounder will not modify your sound settings.
 
 ## Settings
 
@@ -23,8 +21,6 @@ Open **Game Menu → Interface → AddOns → Sounder** to configure:
 | **Fishing SFX Volume (0–100)** | SFX Volume level applied while a cast is in progress |
 | **Disable Music while fishing** | Disable music while a cast is in progress |
 | **Disable Ambient Sounds while fishing** | Disable ambient sounds while a cast is in progress |
-
-![Sounder settings panel](sounder.png)
 
 Settings persist across sessions via the `SounderDB` saved variable.
 
