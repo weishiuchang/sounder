@@ -4,6 +4,15 @@ local savedSFXEnabled, savedSFXVolume, savedMasterVolume
 local savedMusicEnabled, savedAmbientEnabled
 local savedSoundEnabled
 
+-- True from the moment sounds are modified for fishing until they have been
+-- *verifiably* restored. Distinct from the savedXxx locals above, which hold
+-- the actual pre-fishing values and must survive across failed restore
+-- attempts (see restoreAudio/attemptRestore).
+local soundsModified = false
+local retryTicker
+
+local RETRY_INTERVAL = 2
+
 local defaults = {
     masterVolume   = 1.0,
     volume         = 1.0,
@@ -38,24 +47,69 @@ local function formatSpellIDs(ids)
     return table.concat(parts, ", ")
 end
 
+-- SetCVar gives no success/failure signal, and during combat lockdown it can
+-- either throw (protected-function error) or silently no-op depending on the
+-- CVar, so the only reliable way to know a write took effect is to read it
+-- back afterwards.
+local function trySetCVar(name, value)
+    local ok = pcall(C_CVar.SetCVar, name, value)
+    return ok and C_CVar.GetCVar(name) == value
+end
+
+-- Attempts to restore every group of saved CVars. Only clears a group's saved
+-- values once that group is verified restored, so unrestored groups survive
+-- to be retried later. Returns true only if everything was restored.
 local function restoreAudio()
+    local allRestored = true
+
     if savedSFXEnabled then
-        C_CVar.SetCVar("Sound_MasterVolume", savedMasterVolume)
-        C_CVar.SetCVar("Sound_EnableSFX",    savedSFXEnabled)
-        C_CVar.SetCVar("Sound_SFXVolume",    savedSFXVolume)
-        savedMasterVolume = nil; savedSFXEnabled = nil; savedSFXVolume = nil
+        local masterOk = trySetCVar("Sound_MasterVolume", savedMasterVolume)
+        local sfxOk     = trySetCVar("Sound_EnableSFX",    savedSFXEnabled)
+        local volOk     = trySetCVar("Sound_SFXVolume",    savedSFXVolume)
+        if masterOk and sfxOk and volOk then
+            savedMasterVolume = nil; savedSFXEnabled = nil; savedSFXVolume = nil
+        else
+            allRestored = false
+        end
     end
     if savedSoundEnabled then
-        C_CVar.SetCVar("Sound_EnableAllSound", savedSoundEnabled)
-        savedSoundEnabled = nil
+        if trySetCVar("Sound_EnableAllSound", savedSoundEnabled) then
+            savedSoundEnabled = nil
+        else
+            allRestored = false
+        end
     end
     if savedMusicEnabled then
-        C_CVar.SetCVar("Sound_EnableMusic", savedMusicEnabled)
-        savedMusicEnabled = nil
+        if trySetCVar("Sound_EnableMusic", savedMusicEnabled) then
+            savedMusicEnabled = nil
+        else
+            allRestored = false
+        end
     end
     if savedAmbientEnabled then
-        C_CVar.SetCVar("Sound_EnableAmbience", savedAmbientEnabled)
-        savedAmbientEnabled = nil
+        if trySetCVar("Sound_EnableAmbience", savedAmbientEnabled) then
+            savedAmbientEnabled = nil
+        else
+            allRestored = false
+        end
+    end
+
+    return allRestored
+end
+
+-- Tries to restore now; if that fails (most commonly because combat lockdown
+-- is blocking CVar writes), keeps retrying every RETRY_INTERVAL seconds until
+-- it succeeds. A fishing restart cancels the retry (see
+-- UNIT_SPELLCAST_CHANNEL_START below) rather than this function.
+local function attemptRestore()
+    if restoreAudio() then
+        soundsModified = false
+        if retryTicker then
+            retryTicker:Cancel()
+            retryTicker = nil
+        end
+    elseif not retryTicker then
+        retryTicker = C_Timer.NewTicker(RETRY_INTERVAL, attemptRestore)
     end
 end
 
@@ -180,10 +234,25 @@ frame:SetScript("OnEvent", function(self, event, ...)
 
     elseif event == "UNIT_SPELLCAST_CHANNEL_START" then
         local _, _, spellID = ...
+        if not spellMatches(spellID) then
+            -- not a fishing cast, nothing to do
+
+        elseif soundsModified then
+            -- Sounds are already modified, most likely because a previous
+            -- restore attempt is still stuck retrying (e.g. we never left
+            -- combat). Fishing again means we want the modified sounds for
+            -- this cast too, so just cancel the pending retry and leave
+            -- everything as-is; restore will be attempted fresh when this
+            -- cast ends.
+            if retryTicker then
+                retryTicker:Cancel()
+                retryTicker = nil
+            end
+
         -- C_CVar.SetCVar for sound CVars is blocked during combat: the secure
         -- frame system protects them from tainted (addon) callers once combat
         -- starts.  Skip the volume boost entirely if already in combat.
-        if spellMatches(spellID) and not UnitAffectingCombat("player") then
+        elseif not UnitAffectingCombat("player") then
             savedSoundEnabled = C_CVar.GetCVar("Sound_EnableAllSound")
             C_CVar.SetCVar("Sound_EnableAllSound", "1")
             savedMasterVolume = C_CVar.GetCVar("Sound_MasterVolume")
@@ -200,19 +269,21 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 savedAmbientEnabled = C_CVar.GetCVar("Sound_EnableAmbience")
                 C_CVar.SetCVar("Sound_EnableAmbience", "0")
             end
+            soundsModified = true
         end
 
     elseif event == "UNIT_SPELLCAST_CHANNEL_STOP" then
         local _, _, spellID = ...
         if not spellMatches(spellID) then return end
-        restoreAudio()
+        attemptRestore()
 
     elseif event == "PLAYER_REGEN_DISABLED" then
         -- Fires the moment the player enters combat.  C_CVar.SetCVar is
-        -- protected once the combat lock is active, so restore audio here —
-        -- before the lock takes effect — to avoid the changes being stuck for
-        -- the duration of combat.
-        restoreAudio()
+        -- protected once the combat lock is active, so try to restore audio
+        -- here — before the lock takes effect — to avoid the changes being
+        -- stuck for the duration of combat. If the lock has already engaged,
+        -- attemptRestore falls back to retrying every RETRY_INTERVAL seconds.
+        attemptRestore()
 
     end
 end)
