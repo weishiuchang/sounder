@@ -14,11 +14,14 @@ local retryTicker
 local RETRY_INTERVAL = 2
 
 local defaults = {
-    masterVolume   = 1.0,
-    volume         = 1.0,
-    spellIDs       = {131476},
-    disableMusic   = true,
-    disableAmbient = true,
+    masterVolume       = 1.0,
+    volume             = 1.0,
+    spellIDs           = {131476},
+    disableMusic       = true,
+    disableAmbient     = true,
+    inviteSoundEnabled = true,
+    -- SOUNDKIT.READY_CHECK
+    inviteSound        = "8960",
 }
 
 local function DB()
@@ -113,6 +116,32 @@ local function attemptRestore()
     end
 end
 
+-- The invite sound field accepts either a numeric SoundKit ID or a sound
+-- file path, so users who don't know a SoundKit ID can still point at a
+-- custom file. Channel "Master" is deliberate: it's gated only by
+-- Sound_EnableAllSound/Sound_MasterVolume, not by the SFX/Music/Ambience
+-- toggles individually -- the same reason DBM-style alert sounds are
+-- audible even with in-game sound effects disabled.
+local function playInviteSound()
+    local sound = DB().inviteSound
+    if not sound or sound == "" then return end
+
+    local id = tonumber(sound)
+    local willPlay
+    if id then
+        -- forceNoDuplicates defaults to true, which silently drops a second
+        -- play of the same SoundKitID within Blizzard's dedup window (e.g.
+        -- back-to-back invites, or repeated Test clicks) -- not what an
+        -- alert sound should do.
+        willPlay = PlaySound(id, "Master", false)
+    else
+        willPlay = PlaySoundFile(sound, "Master")
+    end
+    if not willPlay then
+        print("|cffff4444Sounder:|r invite sound did not play (bad sound ID/path, or Sound_EnableAllSound/Sound_MasterVolume is muted).")
+    end
+end
+
 frame:RegisterEvent("ADDON_LOADED")
 -- Registered for the player only: fishing is always a player cast, and since
 -- Midnight (12.0) spellIDs from other units' cast events can be "secret"
@@ -120,6 +149,14 @@ frame:RegisterEvent("ADDON_LOADED")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_START", "player")
 frame:RegisterUnitEvent("UNIT_SPELLCAST_CHANNEL_STOP",  "player")
 frame:RegisterEvent("PLAYER_REGEN_DISABLED")
+-- PARTY_INVITE_REQUEST covers a direct invite (e.g. from a friend or
+-- guildmate), firing as soon as the invite arrives. LFG_LIST_APPLICATION_
+-- STATUS_UPDATED with newStatus "invited" is the Group Finder equivalent --
+-- fired when a premade group leader invites you, before you've responded.
+-- (LFG_LIST_JOINED_GROUP looked similar but only fires after you accept,
+-- which is too late for a "you've been invited" alert.)
+frame:RegisterEvent("PARTY_INVITE_REQUEST")
+frame:RegisterEvent("LFG_LIST_APPLICATION_STATUS_UPDATED")
 
 frame:SetScript("OnEvent", function(self, event, ...)
     if event == "ADDON_LOADED" then
@@ -131,6 +168,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
         if SounderDB.spellIDs       == nil then SounderDB.spellIDs       = defaults.spellIDs       end
         if SounderDB.disableMusic   == nil then SounderDB.disableMusic   = defaults.disableMusic   end
         if SounderDB.disableAmbient == nil then SounderDB.disableAmbient = defaults.disableAmbient end
+        if SounderDB.inviteSoundEnabled == nil then SounderDB.inviteSoundEnabled = defaults.inviteSoundEnabled end
+        if SounderDB.inviteSound       == nil then SounderDB.inviteSound       = defaults.inviteSound       end
         SounderDB.alerts = nil  -- drop saved data from the removed alerts feature
 
         local function makeRow(parent, labelText, yOffset, width, numeric)
@@ -181,6 +220,18 @@ frame:SetScript("OnEvent", function(self, event, ...)
         local musicCheck   = makeCheckbox(panel, "Disable Music while fishing",          -260)
         local ambientCheck = makeCheckbox(panel, "Disable Ambient Sounds while fishing", -300)
 
+        local inviteHeader = panel:CreateFontString(nil, "ARTWORK", "GameFontNormal")
+        inviteHeader:SetPoint("TOPLEFT", 16, -340)
+        inviteHeader:SetText("Group/Raid Invite Alert")
+
+        local inviteCheck    = makeCheckbox(panel, "Play sound when invited to a group or raid", -364)
+        local inviteSoundBox = makeRow(panel, "Invite Sound (Sound ID or file path):",            -404, 220, false)
+
+        local testButton = CreateFrame("Button", nil, panel, "UIPanelButtonTemplate")
+        testButton:SetSize(80, 22)
+        testButton:SetPoint("LEFT", inviteSoundBox, "RIGHT", 8, 0)
+        testButton:SetText("Test")
+
         local function saveMasterVolume()
             local v = math.max(0, math.min(100, tonumber(masterBox:GetText()) or 100))
             DB().masterVolume = v / 100
@@ -212,8 +263,18 @@ frame:SetScript("OnEvent", function(self, event, ...)
         spellBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
         spellBox:SetScript("OnEditFocusLost", function(self) self:ClearHighlightText(); saveSpells() end)
 
+        local function saveInviteSound()
+            DB().inviteSound = inviteSoundBox:GetText()
+        end
+
+        inviteSoundBox:SetScript("OnEnterPressed", function(self) saveInviteSound(); self:ClearFocus() end)
+        inviteSoundBox:SetScript("OnEscapePressed", function(self) self:ClearFocus() end)
+        inviteSoundBox:SetScript("OnEditFocusLost", function(self) self:ClearHighlightText(); saveInviteSound() end)
+
         musicCheck:SetScript("OnClick",   function(self) DB().disableMusic   = self:GetChecked() end)
         ambientCheck:SetScript("OnClick", function(self) DB().disableAmbient = self:GetChecked() end)
+        inviteCheck:SetScript("OnClick",  function(self) DB().inviteSoundEnabled = self:GetChecked() end)
+        testButton:SetScript("OnClick",   function() playInviteSound() end)
 
         panel:SetScript("OnShow", function()
             -- Deferred one frame: OnShow fires before the Settings system
@@ -226,6 +287,8 @@ frame:SetScript("OnEvent", function(self, event, ...)
                 volumeBox:SetText(tostring(math.floor(DB().volume * 100 + 0.5)))
                 musicCheck:SetChecked(DB().disableMusic)
                 ambientCheck:SetChecked(DB().disableAmbient)
+                inviteCheck:SetChecked(DB().inviteSoundEnabled)
+                inviteSoundBox:SetText(DB().inviteSound)
             end)
         end)
 
@@ -284,6 +347,17 @@ frame:SetScript("OnEvent", function(self, event, ...)
         -- stuck for the duration of combat. If the lock has already engaged,
         -- attemptRestore falls back to retrying every RETRY_INTERVAL seconds.
         attemptRestore()
+
+    elseif event == "PARTY_INVITE_REQUEST" then
+        if DB().inviteSoundEnabled then
+            playInviteSound()
+        end
+
+    elseif event == "LFG_LIST_APPLICATION_STATUS_UPDATED" then
+        local _, newStatus = ...
+        if newStatus == "invited" and DB().inviteSoundEnabled then
+            playInviteSound()
+        end
 
     end
 end)
